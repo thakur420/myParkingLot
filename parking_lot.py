@@ -1,83 +1,57 @@
-from constants import ParkingSpotType
-from constants import VehicleType
-from parking_spot import ParkingSpot
 from vehicle import Vehicle
-from parking_ticket import ParkingTicket
-from parking_rate import ParkingRate
-from payment import Payment
-from utils import AutoIncrementID, curr_time, calculate_hrs, get_parking_rate, get_payment_mode
+from parking_enum import PaymentStatus
+from collections import Counter
+import utility as util
+import logging
+logging.basicConfig(level=logging.INFO)
 
-class _ParkingLot(type):
-    __instance = None
-    
-    def __new__(cls,name, bases, dct):
-        if cls.__instance is None:
-            cls.__instance = super(_ParkingLot, cls).__new__(cls,name, bases, dct)
-        return cls.__instance
-    
-class ParkingLot(metaclass=_ParkingLot):
-    def __init__(self, id, name, address, capacity, display_board, parking_spots, entrances, exits) -> None:
+class ParkingLot:
+    def __init__(self, id, spot_manager, ticket_manager, payment_manager):
         self.id = id
-        self.name = name
-        self.address = address
-        self.capicty = capacity
-        self.display_board = display_board
-        self.parking_spots = parking_spots # dict = {type:list[parking_spots]}
-        self.entrances = entrances
-        self.exits = exits
-        self.tickets = {}
-    
-    def is_full(self):
-        pass
+        self.spot_manager = spot_manager
+        self.ticket_manager = ticket_manager
+        self.payment_manager = payment_manager
 
-    def book_ticket(self,vehicle): 
-        parking_spot_type = self._get_parking_type(vehicle.type)
-        parking_spot = self._get_parking_spot(parking_spot_type)
-        if parking_spot is None:
-            print("No free spot Available")
-            return
-        parking_spot.add_vehicle(vehicle)
-        parking_ticket = ParkingTicket(AutoIncrementID.get_next_id(),vehicle,curr_time(),parking_spot)
-        self.tickets[vehicle.license] = parking_ticket
-        return parking_ticket
-
-    def get_ticket(self,license):
-        if license in self.tickets:
-            return self.tickets[license]
-
-    def _get_parking_type(self, type):
-        if type == VehicleType.MOTORBIKE:
-            return ParkingSpotType.MOTORCYCLE
-        elif type == VehicleType.CAR:
-            return ParkingSpotType.COMPACT
-        return ParkingSpotType.LARGE
+    def __str__(self):
+        details = f"ParkingLot(ID: {self.id}, Levels: {len(self.parking_levels)})\n"
+        details += str(self.spot_manager)
+        return details
     
-    def _get_parking_spot(self, type):
-        parking_spots = self.parking_spots[type]
-        for parking_spot in parking_spots:
-            if parking_spot.is_empty :
-                return parking_spot
-        return None
-    
-    def make_payment(self,parking_ticket, mode):
-        if parking_ticket is None or mode is None:
+    def book_parking(self, vehicle: Vehicle):
+        parking_spot = self.spot_manager.get_free_slot(vehicle.type)
+        if not parking_spot:
+            logging.info(f"[{util.get_curr_time()}]: No available parking spots for this vehicle type.")
             return None
-        
-        vehicle = parking_ticket.vehicle
-        parking_spot = parking_ticket.parking_spot
+        ticket = self.ticket_manager.create_ticket(vehicle,parking_spot)
+        logging.info(f"[{util.get_curr_time()}]:Parking booked. Ticket ID: {ticket.ticket_id}")
+        return ticket.ticket_id
 
-        hrs = calculate_hrs(parking_ticket.timestamp)
-        rate = get_parking_rate(vehicle.type)
-        mode = get_payment_mode(mode)
+    def make_payment(self, ticket_id: int , payment_type):
+        ticket = self.ticket_manager.get_ticket(ticket_id)
+        if not ticket:
+            logging.error(f"[{util.get_curr_time()}]: Invalid ticket ID.")
+            return 
         
-        parking_rate = ParkingRate(hrs,rate)
-        amt = parking_rate.calculate_amt()
-        print(f"processing payment of {amt:.2f} for {hrs:.2f} mins...")
-        payment = Payment(AutoIncrementID.get_next_id(), mode, amt)
-        payment.pay()
-        
-        parking_spot.remove_vehicle()
-        del self.tickets[vehicle.license]
-        return payment
+        amount = self.payment_manager.calculate_charge(ticket.vehicle.type, ticket.entry_time)
+        payment = self.payment_manager.process_payment(ticket_id, payment_type, amount)
+        if payment and payment.status == PaymentStatus.PAID:
+            logging.info(f"[{util.get_curr_time()}]: Paid Sucessfully. Generating Bill ...")
+            ticket.parking_spot.release_spot()
+            self.ticket_manager.remove_ticket(ticket_id)
+        else:
+            logging.info(f"[{util.get_curr_time()}]: Payment failed. Try again ...")
+
+    
+    def display(self):
+        counter = Counter()
+        for parking_level in self.spot_manager.parking_levels:
+            for parking_spot in parking_level.parking_spots:
+                if parking_spot.vacant:
+                    counter[parking_spot.type] += 1
+
+        print(f"{'vehicleType':<15}{'freeSpot':<10}")
+        for vehicle_type, free_spot in counter.items():
+            print(f"{vehicle_type.name:<15}{free_spot:<10}")
+
     
     
